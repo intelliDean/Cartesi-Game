@@ -5,74 +5,97 @@ const { ethers } = require("ethers");
 const rollup_server = process.env.ROLLUP_HTTP_SERVER_URL;
 console.log("HTTP rollup_server url is " + rollup_server);
 
-// Generate a random target number between 1 and 100
-let targetNumber = Math.floor(Math.random() * 100);
-// Define the max number of guesses allowed before resetting
-const MAX_GUESSES = 3;
-let guessCount = 0; // Tracks the number of attempts
+const MAX_CHANCE = 3;
+let mysteryNumber = Math.floor(Math.random() * 20) + 1;
+let guesses = 0;
 
-function checkGuess(playerGuess, targetNumber, guessCount) {
-  // Determine if the player's guess is correct, too low, or too high
-  if (playerGuess === targetNumber) {
+function playGame(playerGuess) {
+  guesses += 1;
+
+  if (playerGuess === mysteryNumber) {
     return [
-      `🎉 You've guessed it in ${guessCount} tries! The number was ${targetNumber}. Game reset.`,
+      `🎉 Bravo! You guessed right in ${guesses} ${
+        guesses === 1 ? "try" : "tries"
+      }! The mystery number was ${mysteryNumber}. 🏆 
+      Ready for another round?`,
       true,
+      "wins",
     ];
-  } else if (playerGuess > targetNumber) {
+  }
+
+  let feedback;
+  if (playerGuess > mysteryNumber) {
+    feedback = `😅 Oops! ${playerGuess} is way too high!`;
+  } else {
+    feedback = `🙃 Whoa! ${playerGuess} is too low!`;
+  }
+
+  if (guesses >= MAX_CHANCE) {
     return [
-      `Too high! Your guess: ${playerGuess}, Attempts: ${guessCount}. Try again!`,
-      false,
+      `${feedback} Oops! You've used up all ${MAX_CHANCE} attempts. 
+      The mystery number was ${mysteryNumber}. 😭 
+      Let's start over!`,
+      true,
+      "fails",
     ];
   } else {
     return [
-      `Too low! Your guess: ${playerGuess}, Attempts: ${guessCount}. Try again!`,
+      `${feedback} That's attempt ${guesses} of ${MAX_CHANCE}.
+      Keep going, you're almost there! 🔥`,
       false,
+      "again",
     ];
   }
 }
 
+let winners = [];
+
 async function handle_advance(data) {
-  console.log("Received advance request data " + JSON.stringify(data));
+  console.log("Received advance request data: " + JSON.stringify(data));
+
+  const metadata = data["metadata"];
+  const sender = metadata["msg_sender"];
+  const payload = data["payload"];
 
   try {
-    const playerGuess = parseInt(hexToUtf8(data.payload));
-    log.info(`Player guessed: ${playerGuess}`);
+    const playerGuess = parseInt(hexToUtf8(payload));
+    log.info(`🔍 The player is guessing: ${playerGuess}`);
 
-    // Increase the guess count
-    guessCount++;
+    const [resultMessage, isCorrect, status] = playGame(playerGuess);
 
-    // Check if the guess is correct
-    const [resultMessage, isCorrect] = checkGuess(
-      playerGuess,
-      targetNumber,
-      guessCount
-    );
-
-    if (isCorrect || guessCount >= MAX_GUESSES) {
-      if (!isCorrect) {
-        log.info(
-          `Out of guesses! The correct number was ${targetNumber}. Game reset.`
-        );
-      }
-      // Reset the game: generate a new target number and reset the guess counter
-      targetNumber = Math.floor(Math.random() * 100);
-      guessCount = 0;
+    if (status === "wins") {
+      winners.push(sender);
     }
 
-    // Send the result as a notice to the rollup server
-    log.info(`Sending notice: '${resultMessage}'`);
+    if (isCorrect || guesses >= MAX_CHANCE) {
+      if (!isCorrect) {
+        log.info(
+          `😢 Out of guesses! The elusive number was ${mysteryNumber}. Better luck next time!`
+        );
+      }
+
+      mysteryNumber = Math.floor(Math.random() * 20) + 1;
+      guesses = 0;
+      log.info(`🔄 Game reset! A new secret number has been chosen.`);
+    }
+
+    log.info(`📢 Sending notice: '${resultMessage}'`);
     const response = await axios.post(`${rollupUrl}/notice`, {
       payload: utf8ToHex(resultMessage),
     });
-    log.info(`Notice status: ${response.status}, body: ${response.data}`);
+    log.info(`✅ Notice status: ${response.status}, body: ${response.data}`);
   } catch (error) {
+
     requestStatus = "reject";
-    const errorMessage = `Error processing request ${data}\n${error.stack}`;
+    const errorMessage = `🚨 Error processing request ${data}\n${error.stack}`;
+
     log.error(errorMessage);
+
     const response = await axios.post(`${rollupUrl}/report`, {
       payload: utf8ToHex(errorMessage),
     });
-    log.info(`Report status: ${response.status}, body: ${response.data}`);
+
+    log.info(`❌ Report status: ${response.status}, body: ${response.data}`);
   }
 
   return "accept";
@@ -80,6 +103,16 @@ async function handle_advance(data) {
 
 async function handle_inspect(data) {
   console.log("Received inspect request data " + JSON.stringify(data));
+
+  const report_req = await fetch(rollup_server + "/report", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      payload: ethers.hexlify(ethers.toUtf8Bytes(JSON.stringify({ winners }))),
+    }),
+  });
   return "accept";
 }
 
